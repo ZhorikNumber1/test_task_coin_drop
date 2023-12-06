@@ -14,7 +14,6 @@ class CurrencyRate extends Model
         'receive_currency_id',
         'send_rate',
         'receive_rate',
-        'amount',
     ];
 
     // Определите здесь связи с моделями Currency, если требуется

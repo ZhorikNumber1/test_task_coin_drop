@@ -2,7 +2,13 @@
 
 namespace App\Console\Commands;
 
+use App\Models\CurrencyRate;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use ZipArchive;
+use GuzzleHttp\Client;
 
 class ParseBestChange extends Command
 {
@@ -25,92 +31,88 @@ class ParseBestChange extends Command
      */
     public function handle()
     {
-        // Шаг 1: Загружаем архив с BestChange
-        $this->info('Downloading rates archive from BestChange...');
-        $zipFile = storage_path('app/public/info.zip'); // Локальный путь для сохранения архива
-        $zipResource = \fopen($zipFile, "w");
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, 'http://api.bestchange.ru/info.zip');
-        curl_setopt($ch, CURLOPT_FAILONERROR, true);
-        curl_setopt($ch, CURLOPT_HEADER, false);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_AUTOREFERER, true);
-        curl_setopt($ch, CURLOPT_BINARYTRANSFER,true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 300);
-        curl_setopt($ch, CURLOPT_FILE, $zipResource);
-        $page = curl_exec($ch);
+        $this->info("Parser is up and running...");
 
-        if(!$page) {
-            $this->error('Failed to download rates archive. Error: ' . curl_error($ch));
-            curl_close($ch);
-            fclose($zipResource);
+        $url = 'http://api.bestchange.ru/info.zip';
+        $filePath = 'bestchange.zip';
+        $extractPath = 'extracted';
+
+        try {
+            $this->downloadFile($url, $filePath);
+            $this->extractArchive($filePath, $extractPath);
+            $this->processRates($extractPath);
+        } catch (\Exception $e) {
+            $this->error($e->getMessage());
             return;
+        } finally {
+            $this->cleanUp($filePath, $extractPath);
+            $this->info('The courses have been successfully updated.');
         }
-
-        curl_close($ch);
-        fclose($zipResource);
-
-        // Шаг 2: Разархивировать архив и прочитать содержимое файла bm_rates.dat
-        $zip = new \ZipArchive();
-        if($zip->open($zipFile) !== true) {
-            $this->error('Could not open the zip archive.');
-            return;
-        }
-
-        $zip->extractTo(storage_path('app/public'));
-        $zip->close();
-        $this->info('Archive has been downloaded and unpacked.');
-
-        // Шаг 3: Прочесть и проанализировать файл bm_rates.dat для каждой пары валют
-        $ratesFilePath = storage_path('app/public/bm_rates.dat');
-        if (!file_exists($ratesFilePath)) {
-            $this->error('bm_rates.dat file does not exist.');
-            return;
-        }
-
-        $lines = file($ratesFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        $bestRates = [];
-
-        foreach ($lines as $line) {
-            // Пример строки: "117;89;454;66.82258603;1;123638.43;0.2506;1"
-            $parts = explode(';', $line);
-
-            // Получаем идентификаторы валют и курсы
-            list($sendCurrencyId, $receiveCurrencyId, , $exchangeRate, $receiveRate) = $parts;
-
-            // Ключ для пары валют
-            $currencyPairKey = $sendCurrencyId . '-' . $receiveCurrencyId;
-
-            // Если для данной пары уже есть курс, проверяем, может ли текущий курс быть лучше
-            if (!isset($bestRates[$currencyPairKey]) || $bestRates[$currencyPairKey]['exchangeRate'] < $exchangeRate) {
-                $bestRates[$currencyPairKey] = [
-                    'sendCurrencyId' => $sendCurrencyId,
-                    'receiveCurrencyId' => $receiveCurrencyId,
-                    'exchangeRate' => $exchangeRate,
-                    'receiveRate' => $receiveRate
-                ];
-            }
-        }
-
-        // Шаг 4: Записываем результаты в базу данных
-        $this->info('Updating database with best rates...');
-        foreach ($bestRates as $bestRate) {
-            // Используем модель для записи в базу данных
-            \App\Models\CurrencyRate::updateOrCreate(
-                [
-                    'send_currency_id' => $bestRate['sendCurrencyId'],
-                    'receive_currency_id' => $bestRate['receiveCurrencyId'],
-                ],
-                [
-                    'send_rate' => $bestRate['sendRate'], // Предполагая что 'sendRate' это правильный ключ в $bestRate
-                    'receive_rate' => $bestRate['receiveRate']
-                ]
-            );
-        }
-
-
-        $this->info('All best rates have been updated in the database.');
     }
 
+    protected function downloadFile($url, $filePath): void
+    {
+        $client = new Client();
 
+        try {
+            $client->request('GET', $url, ['sink' => Storage::path($filePath)]);
+        } catch (GuzzleException $e) {
+            throw new \Exception("Failed to download the archive. " . $e->getMessage());
+        }
+    }
+
+    protected function extractArchive($filePath, $extractPath): void
+    {
+        $zip = new ZipArchive();
+
+        if ($zip->open(Storage::path($filePath)) === true) {
+            $zip->extractTo(Storage::path($extractPath));
+            $zip->close();
+        } else {
+            throw new \Exception("Failed to unpack the archive.");
+        }
+    }
+
+    protected function processRates($extractPath): void
+    {
+        $ratesFilePath = Storage::path($extractPath . '\bm_rates.dat');
+        $this->info("Check");
+        DB::beginTransaction();
+        try {
+            $ratesFile = fopen($ratesFilePath, 'r');
+            while (($line = fgetcsv($ratesFile, 0, ';')) !== false) {
+                $this->info($line[0] . " " . $line[1]. " " . $line[3]. " " . $line[4]);
+                $this->updateOrCreateRate($line);
+            }
+            fclose($ratesFile);
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+    }
+
+    protected function updateOrCreateRate($line): void
+    {
+        $send_currency_id = $line[0];
+        $receive_currency_id = $line[1];
+        $send_rate = $line[3];
+        $receive_rate = $line[4];
+
+        CurrencyRate::updateOrCreate([
+            'send_currency_id' => $send_currency_id,
+            'receive_currency_id' => $receive_currency_id,
+        ], [
+            'send_rate' => $send_rate,
+            'receive_rate' => $receive_rate,
+        ]);
+    }
+
+    protected function cleanUp($filePath, $extractPath): void
+    {
+        Storage::delete($filePath);
+        $files = Storage::allFiles($extractPath);
+        Storage::delete($files);
+        Storage::deleteDirectory($extractPath);
+    }
 }
