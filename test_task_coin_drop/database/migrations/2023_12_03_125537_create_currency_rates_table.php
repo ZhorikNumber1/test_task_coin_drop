@@ -13,11 +13,10 @@ return new class extends Migration
     {
         Schema::create('currency_rates', function (Blueprint $table) {
             $table->id();
-            $table->unsignedBigInteger('send_currency_id');
-            $table->unsignedBigInteger('receive_currency_id');
-            $table->decimal('send_rate', 16, 8);
-            $table->decimal('receive_rate', 16, 8);
-            $table->decimal('amount', 16, 8);
+            $table->unsignedBigInteger('send_currency_id')->nullable();
+            $table->unsignedBigInteger('receive_currency_id')->nullable();
+            $table->double('send_rate')->nullable();
+            $table->double('receive_rate')->nullable();
             $table->timestamps();
         });
     }

@@ -12,8 +12,10 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+        $schedule->command('app:parse-best-change')->cron('*/30 * * * *');
     }
+
+
 
     /**
      * Register the commands for the application.
