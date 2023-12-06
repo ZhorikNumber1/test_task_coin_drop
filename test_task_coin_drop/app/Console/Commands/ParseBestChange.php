@@ -38,18 +38,21 @@ class ParseBestChange extends Command
         $extractPath = 'extracted';
 
         try {
-            $this->downloadFile($url, $filePath);
-            $this->extractArchive($filePath, $extractPath);
-            $this->processRates($extractPath);
+            $this->downloadFile($url, $filePath); // Загрузка архива с данными об обменном курсе
+            $this->extractArchive($filePath, $extractPath); // Извлечение содержимого архива
+            $this->processRates($extractPath); // Обработка извлеченных данных и обновление курса в БД
         } catch (\Exception $e) {
-            $this->error($e->getMessage());
+            $this->error($e->getMessage()); // Вывод сообщения об ошибке, если что-то пошло не так
             return;
         } finally {
-            $this->cleanUp($filePath, $extractPath);
-            $this->info('The courses have been successfully updated.');
+            $this->cleanUp($filePath, $extractPath); // Очистка временных файлов
+            $this->info('The courses have been successfully updated.'); // Сообщение об успешном завершении
         }
     }
 
+    /**
+     * Загружает файл по указанному URL и сохраняет его на диске.
+     */
     protected function downloadFile($url, $filePath): void
     {
         $client = new Client();
@@ -61,6 +64,9 @@ class ParseBestChange extends Command
         }
     }
 
+    /**
+     * Извлекает файлы из архива в указанную директорию.
+     */
     protected function extractArchive($filePath, $extractPath): void
     {
         $zip = new ZipArchive();
@@ -73,41 +79,45 @@ class ParseBestChange extends Command
         }
     }
 
+    /**
+     * Обрабатывает данные о курсах валют и обновляет информацию в базе данных.
+     */
     protected function processRates($extractPath): void
     {
         $ratesFilePath = Storage::path($extractPath . '\bm_rates.dat');
-        $this->info("Check");
-        DB::beginTransaction();
+
+        DB::beginTransaction(); // Начало транзакции
         try {
             $ratesFile = fopen($ratesFilePath, 'r');
             while (($line = fgetcsv($ratesFile, 0, ';')) !== false) {
-                $this->info($line[0] . " " . $line[1]. " " . $line[3]. " " . $line[4]);
-                $this->updateOrCreateRate($line);
+                $this->updateOrCreateRate($line); // Обновление или создание записи о курсе валюты
             }
             fclose($ratesFile);
-            DB::commit();
+            DB::commit(); // Подтверждение транзакции
         } catch (\Exception $e) {
-            DB::rollBack();
+            DB::rollBack(); // Отмена транзакции в случае ошибки
             throw $e;
         }
     }
 
+    /**
+     * Создает или обновляет курс валюты в базе данных.
+     */
     protected function updateOrCreateRate($line): void
     {
-        $send_currency_id = $line[0];
-        $receive_currency_id = $line[1];
-        $send_rate = $line[3];
-        $receive_rate = $line[4];
-
+        // Атрибуты для поиска существующей записи и значения для создания/обновления
         CurrencyRate::updateOrCreate([
-            'send_currency_id' => $send_currency_id,
-            'receive_currency_id' => $receive_currency_id,
+            'send_currency_id' => $line[0],
+            'receive_currency_id' => $line[1],
         ], [
-            'send_rate' => $send_rate,
-            'receive_rate' => $receive_rate,
+            'send_rate' => $line[3],
+            'receive_rate' => $line[4],
         ]);
     }
 
+    /**
+     * Удаляет временные файлы и директории, созданные в процессе работы скрипта.
+     */
     protected function cleanUp($filePath, $extractPath): void
     {
         Storage::delete($filePath);

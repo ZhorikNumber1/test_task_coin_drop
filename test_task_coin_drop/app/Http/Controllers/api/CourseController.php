@@ -33,7 +33,6 @@ class CourseController extends Controller
     }
 
     /**
-     * @param CurrencyRateShowRequest $request
      * @param $send_currency
      * @param $receive_currency
      * @param CurrencyRateService $service
