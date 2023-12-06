@@ -84,18 +84,40 @@ class ParseBestChange extends Command
      */
     protected function processRates($extractPath): void
     {
-        $ratesFilePath = Storage::path($extractPath . '\bm_rates.dat');
+        $ratesFilePath = Storage::path($extractPath . '/bm_rates.dat'); // Использование правильного разделителя для пути
 
-        DB::beginTransaction(); // Начало транзакции
+        DB::beginTransaction();
         try {
+            $batchSize = 500;
+            $rateDataBatch = [];
             $ratesFile = fopen($ratesFilePath, 'r');
+            $fileSize = filesize($ratesFilePath); // Размер файла для отслеживания прогресса
+            $processedSize = 0; // Количество обработанных байт
             while (($line = fgetcsv($ratesFile, 0, ';')) !== false) {
-                $this->updateOrCreateRate($line); // Обновление или создание записи о курсе валюты
+                $rateDataBatch[] = [
+                    'send_currency_id' => $line[0],
+                    'receive_currency_id' => $line[1],
+                    'send_rate' => $line[3],
+                    'receive_rate' => $line[4],
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+                $processedSize += strlen(implode(';', $line)) + 1; // +1 для учета перевода строки
+                $this->showProgress($processedSize, $fileSize);
+                if (count($rateDataBatch) === $batchSize) {
+                    $this->upsertBatch($rateDataBatch);
+                    $rateDataBatch = [];
+                }
             }
+
+            if (count($rateDataBatch) > 0) {
+                $this->upsertBatch($rateDataBatch);
+            }
+
             fclose($ratesFile);
-            DB::commit(); // Подтверждение транзакции
+            DB::commit(); // Подтвердить транзакцию
         } catch (\Exception $e) {
-            DB::rollBack(); // Отмена транзакции в случае ошибки
+            DB::rollBack(); // Отменить транзакцию в случае ошибки
             throw $e;
         }
     }
@@ -103,17 +125,28 @@ class ParseBestChange extends Command
     /**
      * Создает или обновляет курс валюты в базе данных.
      */
-    protected function updateOrCreateRate($line): void
+    protected function upsertBatch(array $rateDataBatch): void
     {
-        // Атрибуты для поиска существующей записи и значения для создания/обновления
-        CurrencyRate::updateOrCreate([
-            'send_currency_id' => $line[0],
-            'receive_currency_id' => $line[1],
-        ], [
-            'send_rate' => $line[3],
-            'receive_rate' => $line[4],
-        ]);
+        foreach ($rateDataBatch as $data) {
+
+            $existingRate = CurrencyRate::where('send_currency_id', $data['send_currency_id'])
+                ->where('receive_currency_id', $data['receive_currency_id'])
+                ->first();
+
+            if ($existingRate) {
+                // Если запись существует, обновите ее
+                $existingRate->update([
+                    'send_rate' => $data['send_rate'],
+                    'receive_rate' => $data['receive_rate'],
+                    'updated_at' => $data['updated_at'],
+                ]);
+            } else {
+                // Если нет, вставьте новую запись
+                CurrencyRate::create($data);
+            }
+        }
     }
+
 
     /**
      * Удаляет временные файлы и директории, созданные в процессе работы скрипта.
@@ -124,5 +157,10 @@ class ParseBestChange extends Command
         $files = Storage::allFiles($extractPath);
         Storage::delete($files);
         Storage::deleteDirectory($extractPath);
+    }
+    protected function showProgress($processedSize, $fileSize): void
+    {
+        $progressPercentage = ($processedSize / $fileSize) * 100;
+        echo sprintf("\rProgress: %.2f%%", $progressPercentage);
     }
 }
